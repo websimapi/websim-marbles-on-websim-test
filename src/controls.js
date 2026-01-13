@@ -1,21 +1,41 @@
 import * as CANNON from "cannon-es";
-import nipplejs from "nipplejs";
+
+/*
+  Touch-first PlayerControls:
+  - single-finger drag: move input (sets this.move.x / this.move.z)
+  - two-finger drag: pans camera focus offset
+  - tap on ball: hold while dragging (kinematic), tap duration charges impulse; on release apply impulse away from camera scaled by hold duration
+  - no external UI used
+*/
 
 export class PlayerControls {
   constructor(body, camera, opts = {}) {
     this.body = body;
     this.camera = camera;
+    this.scene = opts.scene;
+    this.dom = opts.domElement || window;
+    this.world = opts.world;
+    this.extrasBodies = opts.extrasBodies || [];
     this.move = { x: 0, z: 0 };
     this.force = 12; // torque/force multiplier
-
-    this._initKeys();
-    this._initNipple(opts.joyEl);
     this._followOffset = { x: 0, y: 2.6, z: 5.6 };
+
+    // touch/raycast helpers
+    this._raycaster = new (window.THREE ? window.THREE.Raycaster : (function(){throw new Error("THREE not present");})());
+    this._touchState = { pointers: new Map(), lastSinglePos: null, panOffset: { x: 0, z: 0 } };
+
+    // interaction state for tapping balls
+    this._held = null; // { body, pointerId, startTime, startPos }
+    this._tapCharge = 0;
+
+    this._initKeys(); // still allow keyboard for non-touch
+    this._initTouch();
+
     this._updateCameraImmediate();
   }
 
   _initKeys() {
-    // Disable keyboard handlers on touch devices to prioritize mobile controls.
+    // keep keyboard controls on non-touch platforms
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) return;
 
     const keys = {};
@@ -40,59 +60,218 @@ export class PlayerControls {
     this.move.z = Math.max(-1, Math.min(1, mz));
   }
 
-  _initNipple(joyEl) {
-    if (!joyEl) return;
-    const manager = nipplejs.create({ zone: joyEl, size: 100, multitouch: false, mode: "dynamic", color: "#fff" });
-    manager.on("move", (evt, data) => {
-      const dist = Math.min(1, (data.distance || 0) / 50);
-      const angle = (data.angle ? data.angle.radian : 0);
-      this.move.x = Math.sin(angle) * dist;
-      this.move.z = -Math.cos(angle) * dist;
-    });
-    manager.on("end", () => { this.move.x = 0; this.move.z = 0; });
+  _initTouch() {
+    // require scene and dom
+    if (!this.scene || !this.dom) return;
+
+    // local references
+    const el = this.dom;
+    el.style.touchAction = "none";
+
+    const getTouchPosNDC = (touch) => {
+      const r = el.getBoundingClientRect();
+      return {
+        x: ((touch.clientX - r.left) / r.width) * 2 - 1,
+        y: -((touch.clientY - r.top) / r.height) * 2 + 1
+      };
+    };
+
+    const pointerDown = (ev) => {
+      ev.preventDefault();
+      for (const t of ev.changedTouches) {
+        this._touchState.pointers.set(t.identifier, { x: t.clientX, y: t.clientY });
+      }
+
+      // if single touch start, capture single pos
+      if (this._touchState.pointers.size === 1) {
+        const first = ev.changedTouches[0];
+        this._touchState.lastSinglePos = { x: first.clientX, y: first.clientY };
+        // check if touch hits any ball
+        const ndc = getTouchPosNDC(first);
+        this._raycaster.setFromCamera(ndc, this.camera);
+        const intersects = this._raycastBodies();
+        if (intersects.length) {
+          const hit = intersects[0];
+          // start hold of the first hit body
+          const body = hit.body;
+          this._held = { body, pointerId: first.identifier, startTime: performance.now(), startPos: { ...this._touchState.lastSinglePos } };
+          // set kinematic so we can move it directly
+          body.type = CANNON.Body.KINEMATIC;
+          body.velocity.setZero();
+          body.angularVelocity.setZero();
+        }
+      }
+    };
+
+    const pointerMove = (ev) => {
+      ev.preventDefault();
+      for (const t of ev.changedTouches) {
+        if (!this._touchState.pointers.has(t.identifier)) continue;
+        this._touchState.pointers.set(t.identifier, { x: t.clientX, y: t.clientY });
+      }
+
+      const count = this._touchState.pointers.size;
+      if (count === 1) {
+        // single-finger: movement input or dragging held ball
+        const p = Array.from(this._touchState.pointers.values())[0];
+        const last = this._touchState.lastSinglePos || p;
+        const dx = p.x - last.x;
+        const dy = p.y - last.y;
+        // normalized movement: use screen deltas to set move vector (in camera plane)
+        const sensitivity = 0.008;
+        this.move.x = Math.max(-1, Math.min(1, dx * sensitivity));
+        this.move.z = Math.max(-1, Math.min(1, dy * sensitivity));
+
+        this._touchState.lastSinglePos = { x: p.x, y: p.y };
+
+        // if holding a ball, move its position to the touch ray intersection with ground-plane
+        if (this._held && this._held.pointerId === Array.from(this._touchState.pointers.keys())[0]) {
+          const ndc = getTouchPosNDC({ clientX: p.x, clientY: p.y });
+          this._raycaster.setFromCamera(ndc, this.camera);
+          const planeY = 0.5; // keep the ball slightly above ground while held
+          const target = this._rayIntersectPlaneY(planeY);
+          if (target) {
+            this._held.body.position.set(target.x, target.y + this._held.body.shapes[0].radius + 0.02, target.z);
+            this._held.body.velocity.setZero();
+            this._held.body.angularVelocity.setZero();
+          }
+        }
+      } else if (count >= 2) {
+        // two-finger: pan camera focus laterally in XZ plane
+        const pts = Array.from(this._touchState.pointers.values());
+        const pA = pts[0], pB = pts[1];
+        // compute midpoint movement delta
+        const mid = { x: (pA.x + pB.x) * 0.5, y: (pA.y + pB.y) * 0.5 };
+        if (this._touchState._lastMid) {
+          const mdx = mid.x - this._touchState._lastMid.x;
+          const sensitivity = 0.01;
+          this._followOffset.x += -mdx * sensitivity;
+          // allow slight Z adjust by vertical two-finger drag
+          const mdy = mid.y - this._touchState._lastMid.y;
+          this._followOffset.z += mdy * sensitivity;
+        }
+        this._touchState._lastMid = mid;
+        // reset single-finger move
+        this.move.x = 0; this.move.z = 0;
+      }
+    };
+
+    const pointerUp = (ev) => {
+      ev.preventDefault();
+      for (const t of ev.changedTouches) {
+        this._touchState.pointers.delete(t.identifier);
+      }
+
+      // if we released a held ball, compute tap duration and possibly apply impulse
+      if (this._held) {
+        const stillHeld = Array.from(this._touchState.pointers.values()).length === 0 || !Array.from(this._touchState.pointers.keys()).includes(this._held.pointerId);
+        if (stillHeld || ev.changedTouches[0].identifier === this._held.pointerId) {
+          const dur = Math.max(0, performance.now() - this._held.startTime);
+          // if user dragged (moved) while holding, assume release with impulse scaled by duration
+          const charge = Math.min(1.8, dur / 400); // cap charge
+          // impulse direction: away from camera towards ball center projected
+          const camPos = this.camera.position;
+          const bpos = this._held.body.position;
+          const dir = new CANNON.Vec3(bpos.x - camPos.x, bpos.y - camPos.y, bpos.z - camPos.z);
+          dir.normalize();
+          const impulseMag = 6 * charge * this._held.body.mass;
+          const impulse = dir.scale(impulseMag);
+          // restore dynamic and apply impulse
+          this._held.body.type = CANNON.Body.DYNAMIC;
+          this._held.body.applyImpulse(impulse, this._held.body.position);
+          this._held = null;
+        }
+      }
+
+      // reset single-touch state
+      if (this._touchState.pointers.size === 0) {
+        this._touchState.lastSinglePos = null;
+        this._touchState._lastMid = null;
+        this.move.x = 0; this.move.z = 0;
+      }
+    };
+
+    el.addEventListener("touchstart", pointerDown, { passive: false });
+    el.addEventListener("touchmove", pointerMove, { passive: false });
+    el.addEventListener("touchend", pointerUp, { passive: false });
+    el.addEventListener("touchcancel", pointerUp, { passive: false });
+  }
+
+  _raycastBodies() {
+    // perform raycast against cannon bodies (marble and extras). We approximate by intersecting THREE meshes attached to bodies via position equality.
+    // The scene is expected to have THREE Meshes that match Cannon bodies by position; instead we'll test against the scene objects under raycaster.
+    if (!this.scene) return [];
+    // raycaster intersects THREE meshes; return array with .body property if attached
+    const intersects = this._raycaster.intersectObjects(this.scene.children, true);
+    // map to cannon bodies by checking userData.body or matching positions (common pattern: meshes may not have body references)
+    const hits = [];
+    for (const it of intersects) {
+      // prefer object.userData.body if present
+      const obj = it.object;
+      const body = obj.userData && obj.userData.body ? obj.userData.body : this._findBodyByPosition(obj.position);
+      if (body) hits.push({ object: obj, body, point: it.point, distance: it.distance });
+    }
+    return hits;
+  }
+
+  _findBodyByPosition(pos) {
+    // simple epsilon match to extras or player body
+    const eps = 0.1;
+    if (!this.world) return null;
+    const all = [this.body, ...this.extrasBodies];
+    for (const b of all) {
+      if (!b) continue;
+      const dx = b.position.x - pos.x, dy = b.position.y - pos.y, dz = b.position.z - pos.z;
+      if (dx*dx + dy*dy + dz*dz < eps*eps) return b;
+    }
+    return null;
+  }
+
+  _rayIntersectPlaneY(y) {
+    // return intersection point of current ray with plane Y = y
+    const origin = this._raycaster.ray.origin;
+    const dir = this._raycaster.ray.direction;
+    if (Math.abs(dir.y) < 1e-6) return null;
+    const t = (y - origin.y) / dir.y;
+    if (t < 0) return null;
+    const p = origin.clone().add(dir.clone().multiplyScalar(t));
+    return { x: p.x, y: p.y, z: p.z };
   }
 
   update(dt) {
-    // convert move into torque applied to sphere to roll realistically
+    // same movement application for single-finger drive
     const input = this.move;
-    const lv = this.body.velocity.length();
 
-    // goal: apply torque perpendicular to desired direction to roll sphere
-    // compute world-space direction on XZ plane
     const dir = new CANNON.Vec3(input.x, 0, input.z);
     if (dir.lengthSquared() > 0.0001) {
       dir.normalize();
-      // apply a force at the contact point offset to create rolling torque, scaled by mass and dt
       const force = dir.scale(this.force * this.body.mass);
-      // apply impulse to center to accelerate
-      const impulse = force.scale(dt * 60); // scale to be framerate-insensitive
+      const impulse = force.scale(dt * 60);
       this.body.applyImpulse(impulse, this.body.position);
-      // Apply slight angular impulse to encourage rolling instead of sliding
       const ang = new CANNON.Vec3(-dir.z, 0, dir.x).scale(0.02 * this.body.mass);
       this.body.applyLocalImpulse(ang, new CANNON.Vec3(0, 0, 0));
     } else {
-      // small stabilization damping when no input
       this.body.angularDamping = 0.08;
     }
+
+    // if a ball is held kinematically, ensure it stays kinematic and synced (no extra action needed)
 
     this._updateCamera(dt);
   }
 
   _updateCamera(dt) {
-    // follow behind the marble smoothly
+    // follow behind the marble smoothly, but include pan offsets
     const pos = this.body.position;
     const desired = {
-      x: pos.x + this._followOffset.x,
+      x: pos.x + this._followOffset.x + (this._touchState.panOffset ? this._touchState.panOffset.x : 0),
       y: pos.y + this._followOffset.y,
-      z: pos.z + this._followOffset.z
+      z: pos.z + this._followOffset.z + (this._touchState.panOffset ? this._touchState.panOffset.z : 0)
     };
 
-    // lerp camera position
     this.camera.position.x += (desired.x - this.camera.position.x) * Math.min(0.12, dt * 8);
     this.camera.position.y += (desired.y - this.camera.position.y) * Math.min(0.12, dt * 8);
     this.camera.position.z += (desired.z - this.camera.position.z) * Math.min(0.12, dt * 8);
 
-    // look at ball with slight lead
     const lookAt = {
       x: pos.x + (this.body.velocity.x * 0.08),
       y: pos.y + 0.4,

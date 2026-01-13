@@ -92,8 +92,13 @@ for (let i = 0; i < 6; i++) {
   extras.push(m);
 }
 
-// Controls - WASD desktop, nipple mobile
-const controls = new PlayerControls(marble.body, camera, { joyEl: document.getElementById("joy") });
+// Controls - WASD desktop and touch interactions
+const controls = new PlayerControls(marble.body, camera, {
+  scene,
+  domElement: renderer.domElement,
+  world: physics.world,
+  extrasBodies: extras.map(e => e.body),
+});
 
 // UI
 document.getElementById("resetBtn").addEventListener("click", resetPlayer);
