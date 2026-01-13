@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Marbles on Websim — Test</title>
+  <style>
+    html,body,#app { height: 100%; margin: 0; background: #0e0e0e; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    /* minimal UI overlay */
+    .ui {
+      position: absolute; inset: 12px 12px auto auto; display:flex; gap:8px; z-index:10;
+    }
+    .btn {
+      background: rgba(255,255,255,0.06); color: #fff; border: none; padding:8px 12px; border-radius:8px;
+      font: 500 14px system-ui; min-height:44px; min-width:44px;
+      backdrop-filter: blur(6px);
+    }
+    .fps {
+      position:absolute; left:12px; bottom:12px; color:#ddd; font:12px/1 system-ui;
+      background: rgba(0,0,0,0.35); padding:6px 8px; border-radius:6px;
+    }
+    /* joystick container for mobile (hidden on desktop) */
+    #joy { position:absolute; left:18px; bottom:80px; width:120px; height:120px; z-index:11; touch-action:none; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.162.0",
+      "three/addons/": "https://esm.sh/three@0.162.0/examples/jsm/",
+      "cannon-es": "https://esm.sh/cannon-es@0.20.0",
+      "nipplejs": "https://esm.sh/nipplejs@0.9.0"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="ui">
+    <button id="resetBtn" class="btn">Reset</button>
+    <button id="toggleLight" class="btn">Toggle Light</button>
+  </div>
+  <div id="joy"></div>
+  <div class="fps" id="fps">0 FPS</div>
+
+  <script type="module" src="./src/main.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
