@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import * as CANNON from "cannon-es";
 
 /*
@@ -21,7 +22,7 @@ export class PlayerControls {
     this._followOffset = { x: 0, y: 2.6, z: 5.6 };
 
     // touch/raycast helpers
-    this._raycaster = new (window.THREE ? window.THREE.Raycaster : (function(){throw new Error("THREE not present");})());
+    this._raycaster = new THREE.Raycaster();
     this._touchState = { pointers: new Map(), lastSinglePos: null, panOffset: { x: 0, z: 0 } };
 
     // interaction state for tapping balls
