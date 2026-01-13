@@ -38,20 +38,27 @@ dir.shadow.camera.top = 12;
 dir.shadow.camera.bottom = -12;
 scene.add(dir);
 
-// Ground visual
-const groundMat = new THREE.MeshStandardMaterial({ color: 0x101214, metalness: 0.02, roughness: 0.55 });
+/* Ground: flat plane for collisions + visible grid overlay for a clear grid terrain */
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x0f1112, metalness: 0.02, roughness: 0.6 });
 const groundGeo = new THREE.PlaneGeometry(80, 80);
 const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
-// subtle rim/backlight plane
+// Grid helper to visualize flat grid terrain (slightly above plane to avoid z-fighting)
+const grid = new THREE.GridHelper(80, 80, 0x2b2b2b, 0x151515);
+grid.material.opacity = 0.9;
+grid.material.transparent = true;
+grid.position.y = 0.001;
+scene.add(grid);
+
+// subtle rim/backlight plane under the grid to deepen contrast
 const reflectGeo = new THREE.PlaneGeometry(80, 80);
-const reflectMat = new THREE.MeshPhysicalMaterial({ color: 0x0b0b0b, metalness: 0.1, roughness: 0.8, opacity: 0.8, transparent: true });
+const reflectMat = new THREE.MeshPhysicalMaterial({ color: 0x090909, metalness: 0.1, roughness: 0.85, opacity: 0.82, transparent: true });
 const reflect = new THREE.Mesh(reflectGeo, reflectMat);
 reflect.rotation.x = -Math.PI / 2;
-reflect.position.y = -0.001;
+reflect.position.y = -0.002;
 scene.add(reflect);
 
 // Orbit controls for camera tuning on desktop (not primary control)

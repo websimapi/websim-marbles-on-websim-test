@@ -15,6 +15,9 @@ export class PlayerControls {
   }
 
   _initKeys() {
+    // Disable keyboard handlers on touch devices to prioritize mobile controls.
+    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) return;
+
     const keys = {};
     const keyMap = { KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0] };
     window.addEventListener("keydown", (e) => {
